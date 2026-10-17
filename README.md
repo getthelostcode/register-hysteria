@@ -28,6 +28,7 @@ printf '4f13b9d93a8afb6e98283702\n' | ./install.sh
 | `--listen ADDR` | 覆盖监听（默认 `:443`） |
 | `--version vX.Y.Z` | 指定 hysteria 版本（默认 v2.13.0） |
 | `--force` | 版本相同也强制重下二进制 |
+| `--gen-cert` | 强制重新生成证书对 `cert`/`key`（旧的自动备份为 `*.bak.<时间戳>`） |
 
 环境变量：`HYSTERIA_ETC`、`HYSTERIA_BIN`、`HYSTERIA_SERVICE`、`SYSTEMD_UNIT_DIR`、
 `MASQUERADE_DIR`、`HYSTERIA_LISTEN`、`HYSTERIA_VERSION`、`REG_API`、`PUBLIC_IP`、
@@ -40,7 +41,7 @@ printf '4f13b9d93a8afb6e98283702\n' | ./install.sh
 | 字段 | 值 |
 |------|----|
 | `listen` | `':443'` |
-| `tls.cert` / `tls.key` | `/etc/hysteria/cert.pem` / `key.pem`（优先用本目录 `cert`/`key`，否则现场自签 10 年） |
+| `tls.cert` / `tls.key` | `/etc/hysteria/cert.pem` / `key.pem`，由脚本自动生成（见下） |
 | `obfs.salamander.password` | **运营商识别码**（客户端需一致） |
 | `trafficStats.listen` | `0.0.0.0:<随机 10000-19000>`（自动避开已占用端口；重跑时复用旧值，旧值不在区间则重新随机） |
 | `trafficStats.secret` | `openssl rand -hex 24`（重跑时复用旧值） |
@@ -48,6 +49,28 @@ printf '4f13b9d93a8afb6e98283702\n' | ./install.sh
 | `bandwidth.up/down` | `100 mbps` |
 
 其余字段（auth、quic 等）原样保留。
+
+## 证书（自动生成，不入库）
+
+安装时脚本自动生成两个文件（仓库里**不含私钥**）：
+
+| 文件 | 内容 |
+|------|------|
+| `/etc/hysteria/cert.pem` | 自签证书，EC P-256，10 年 |
+| `/etc/hysteria/key.pem` | 对应私钥，权限 600 |
+
+- SAN 自动带上：主机名、`localhost`、`127.0.0.1`、该节点探测到的公网 IP
+- 已存在且配对就复用（重跑不会换证书）；缺失或不配对就重新生成
+- `--gen-cert` 强制重生成，旧的备份为 `cert.pem.bak.<时间戳>`
+- 想用固定证书：把 `cert`、`key` 两个文件放到 `install.sh` 同目录，脚本会直接装过去（覆盖自动生成）
+- 客户端侧自签证书默认不信任：要么客户端 `tls.insecure: true`，要么把 `cert.pem` 作为 `ca` 下发
+
+查看生成结果：
+
+```bash
+openssl x509 -in /etc/hysteria/cert.pem -noout -subject -dates -ext subjectAltName
+ls -l /etc/hysteria/key.pem   # 期望 -rw-------
+```
 
 ## 上报
 

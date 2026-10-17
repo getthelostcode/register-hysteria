@@ -8,6 +8,7 @@
 #   ./install.sh --code <CODE> --dry-run          # 只打印将要写入的配置和上报内容
 #   ./install.sh --register-only                  # 服务已装好，只重新上报注册信息
 #   ./install.sh --verify-only                    # 只做健康检查（服务/端口/API）
+#   ./install.sh --code <CODE> --gen-cert         # 强制重新生成证书对（旧的自备份）
 #
 # 做的事:
 #   1. 用 <运营商识别码> 渲染 config.yaml（obfs salamander 密码 = 识别码）
@@ -15,7 +16,8 @@
 #      - trafficStats 监听 0.0.0.0:<随机 10000-19000>（自动避开已占用端口）
 #      - trafficStats secret 随机 48 位 hex
 #      - bandwidth up/down 100 mbps
-#   2. 安装证书（优先用脚本目录里自带的 cert/key，否则现场自签 10 年）
+#   2. 自动生成证书对 cert/key（EC P-256，10 年，SAN 含公网 IP 与主机名）
+#      —— 脚本目录里放了 cert/key 就直接用；--gen-cert 强制重新生成（先备份）
 #   3. 安装 hysteria 二进制 + systemd 单元并启动
 #   4. 验证：服务 active、UDP 端口在听、trafficStats API 返回 200
 #   5. 探测公网 IP，POST 到 https://hysteria.ipx.sarl/new
@@ -56,6 +58,7 @@ DO_REGISTER=1
 REGISTER_ONLY=0
 VERIFY_ONLY=0
 FORCE=0
+GEN_CERT=0
 NO_DOWNLOAD=0
 
 # ------------------------------------------------------------------ 日志
@@ -98,6 +101,7 @@ while [[ $# -gt 0 ]]; do
     --verify-only)    VERIFY_ONLY=1; shift ;;
     --no-download)    NO_DOWNLOAD=1; shift ;;
     --force)          FORCE=1; shift ;;
+    --gen-cert)       GEN_CERT=1; shift ;;
     --dry-run)        DRY_RUN=1; shift ;;
     -h|--help)        usage; exit 0 ;;
     -*)               die "未知参数: $1（-h 查看用法）" ;;
@@ -199,37 +203,64 @@ verify_rendered() {
 }
 
 # ------------------------------------------------------------------ 证书
+# 证书与私钥是否配对（不配对时 hysteria 启动即失败）
+cert_key_match() {
+  local cert="$1" key="$2" a b
+  [[ -s "$cert" && -s "$key" ]] || return 1
+  a="$(openssl x509 -in "$cert" -noout -pubkey 2>/dev/null | openssl sha256)"
+  b="$(openssl pkey -in "$key" -pubout 2>/dev/null | openssl sha256)"
+  [[ -n "$a" && "$a" == "$b" ]]
+}
+
+# 自动生成两个文件：cert（证书）+ key（EC P-256 私钥），10 年有效期，
+# SAN 含主机名、localhost、127.0.0.1 与探测到的公网 IP
+gen_cert() {
+  local cert="$1" key="$2" ip="${PUBLIC_IP:-}" host san
+  host="$(hostname -f 2>/dev/null || hostname)"
+  [[ -n "$host" ]] || host="localhost"
+  san="DNS:${host},DNS:localhost,IP:127.0.0.1"
+  if [[ -n "$ip" ]]; then san="${san},IP:${ip}"; fi
+
+  mkdir -p "$(dirname "$cert")"
+  info "→ 自动生成证书对（EC P-256，10 年）"
+  info "  CN=${host}  SAN=${san}"
+  run_t 60 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -keyout "$key" -out "$cert" -days 3650 -nodes \
+    -subj "/CN=${host}" -addext "subjectAltName=${san}" >/dev/null 2>&1 \
+    || die "生成证书失败（openssl req 出错）"
+  chmod 644 "$cert"
+  chmod 600 "$key"
+}
+
 install_cert() {
-  local cert="$1" key="$2"
+  local cert="$1" key="$2" ts
   mkdir -p "$(dirname "$cert")"
 
-  if [[ -s "${SCRIPT_DIR}/cert" && -s "${SCRIPT_DIR}/key" ]]; then
+  if [[ $GEN_CERT -eq 1 ]]; then
+    if [[ -s "$cert" || -s "$key" ]]; then
+      ts="$(date +%Y%m%d%H%M%S)"
+      [[ -s "$cert" ]] && cp -a "$cert" "${cert}.bak.${ts}"
+      [[ -s "$key" ]]  && cp -a "$key"  "${key}.bak.${ts}"
+      info "→ 已备份旧证书：${cert}.bak.${ts}"
+    fi
+    gen_cert "$cert" "$key"
+  elif [[ -s "${SCRIPT_DIR}/cert" && -s "${SCRIPT_DIR}/key" ]]; then
     info "→ 使用脚本目录自带的 cert/key"
     install -m 644 "${SCRIPT_DIR}/cert" "$cert"
     install -m 600 "${SCRIPT_DIR}/key"  "$key"
-  elif [[ -s "$cert" && -s "$key" ]]; then
+  elif cert_key_match "$cert" "$key"; then
     info "→ 复用已存在的证书 $cert"
     chmod 600 "$key"
-    return 0
   else
-    info "→ 现场自签证书（10 年，SAN 含公网 IP 与主机名）"
-    local ip="${PUBLIC_IP:-}" host
-    host="$(hostname -f 2>/dev/null || hostname)"
-    local san="DNS:${host},DNS:localhost,IP:127.0.0.1"
-    [[ -n "$ip" ]] && san="${san},IP:${ip}"
-    run_t 60 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-      -keyout "$key" -out "$cert" -days 3650 -nodes \
-      -subj "/CN=${host}" -addext "subjectAltName=${san}" >/dev/null 2>&1 \
-      || die "自签证书失败（openssl req 出错）"
-    chmod 644 "$cert"; chmod 600 "$key"
+    if [[ -s "$cert" || -s "$key" ]]; then
+      warn "已有证书/私钥缺失或不匹配，重新生成"
+    fi
+    gen_cert "$cert" "$key"
   fi
 
-  # 证书与私钥必须配对，否则 hysteria 启动即失败
-  local a b
-  a="$(openssl x509 -in "$cert" -noout -pubkey 2>/dev/null | openssl sha256)"
-  b="$(openssl pkey -in "$key" -pubout 2>/dev/null | openssl sha256)"
-  [[ -n "$a" && "$a" == "$b" ]] || die "证书与私钥不匹配：$cert / $key"
+  cert_key_match "$cert" "$key" || die "证书与私钥不匹配：$cert / $key"
   ok "证书就绪：$cert（有效期至 $(openssl x509 -in "$cert" -noout -enddate | cut -d= -f2)）"
+  ok "私钥权限：$(stat -c '%a %n' "$key" 2>/dev/null || ls -l "$key")"
 }
 
 # ------------------------------------------------------------ 二进制/服务

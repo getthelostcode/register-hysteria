@@ -1,0 +1,6 @@
+# 节点证书由 install.sh 自动生成，不入库
+cert
+key
+cert.pem
+key.pem
+*.bak.*
