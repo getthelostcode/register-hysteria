@@ -18,7 +18,7 @@
 #      - bandwidth up/down 100 mbps
 #   2. 自动生成证书对 cert/key（EC P-256，10 年，SAN 含公网 IP 与主机名）
 #      —— 脚本目录里放了 cert/key 就直接用；--gen-cert 强制重新生成（先备份）
-#   3. 安装 hysteria 二进制 + systemd 单元并启动
+#   3. 安装 hysteria 二进制 + systemd 单元；配置写完立刻重启（三者都没变才跳过重启）
 #   4. 验证：服务 active、UDP 端口在听、trafficStats API 返回 200
 #   5. 探测公网 IP，POST 到 https://hysteria.ipx.sarl/new
 #      （失败只 WARN，不上报不算安装失败；payload 存在 <配置目录>/register.json）
@@ -304,14 +304,16 @@ install_binary() {
     || { rm -rf "$tmp"; die "下载失败: $url（可用 HYSTERIA_VERSION=vX.Y.Z 换版本，或 --no-download 手动放置二进制）"; }
   [[ -s "$tmp/hysteria" ]] || { rm -rf "$tmp"; die "下载到的文件为空: $url"; }
   install -m 755 "$tmp/hysteria" "$HYSTERIA_BIN"
+  BINARY_CHANGED=1
   rm -rf "$tmp"
   ok "已安装 $("$HYSTERIA_BIN" version 2>/dev/null | awk -F'\t' '/^Version:/ {print $2; exit}') → $HYSTERIA_BIN"
 }
 
 install_unit() {
-  local unit="${UNIT_DIR}/${SERVICE_NAME}.service"
+  local unit="${UNIT_DIR}/${SERVICE_NAME}.service" tmp
   mkdir -p "$UNIT_DIR"
-  cat > "$unit" <<EOF
+  tmp="${unit}.tmp.$$"
+  cat > "$tmp" <<EOF
 [Unit]
 Description=Hysteria2 Server
 Documentation=https://v2.hysteria.network/
@@ -329,24 +331,48 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
-  chmod 644 "$unit"
+  chmod 644 "$tmp"
   if command -v systemd-analyze >/dev/null 2>&1; then
-    systemd-analyze verify "$unit" >/dev/null 2>&1 || warn "systemd-analyze verify 报警（$unit），继续"
+    systemd-analyze verify "$tmp" >/dev/null 2>&1 || warn "systemd-analyze verify 报警（$unit），继续"
+  fi
+  if [[ -f "$unit" ]] && cmp -s "$tmp" "$unit"; then
+    rm -f "$tmp"
+    ok "systemd 单元未变化：$unit"
+  else
+    install -m 644 "$tmp" "$unit"
+    rm -f "$tmp"
+    UNIT_CHANGED=1
+    ok "systemd 单元已写入：$unit"
   fi
   systemctl daemon-reload
-  ok "systemd 单元就绪：$unit"
 }
 
-start_service() {
+# 配置写完/二进制或单元更新后，立刻重启让新状态生效（三者都没变才跳过重启）
+apply_service() {
+  local cfg_changed="${1:-1}" reason=""
   systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || warn "enable ${SERVICE_NAME} 失败"
-  info "→ 启动 ${SERVICE_NAME}"
-  systemctl restart "$SERVICE_NAME" || die "启动失败，看日志：journalctl -u ${SERVICE_NAME} -n 30 --no-pager"
+
+  if [[ "$cfg_changed" -eq 1 ]]; then reason="${reason}配置变更 "; fi
+  if [[ ${BINARY_CHANGED:-0} -eq 1 ]]; then reason="${reason}二进制更新 "; fi
+  if [[ ${UNIT_CHANGED:-0} -eq 1 ]]; then reason="${reason}systemd 单元变更 "; fi
+
+  if [[ -n "$reason" ]]; then
+    info "→ 重启 ${SERVICE_NAME}（${reason% }）"
+    systemctl restart "$SERVICE_NAME" || die "重启失败，看日志：journalctl -u ${SERVICE_NAME} -n 30 --no-pager"
+  elif systemctl is-active --quiet "$SERVICE_NAME"; then
+    ok "${SERVICE_NAME} 已在运行，配置未变更，跳过重启"
+    return 0
+  else
+    info "→ 启动 ${SERVICE_NAME}"
+    systemctl start "$SERVICE_NAME" || die "启动失败，看日志：journalctl -u ${SERVICE_NAME} -n 30 --no-pager"
+  fi
+
   local i
   for i in $(seq 1 20); do
     if systemctl is-active --quiet "$SERVICE_NAME"; then ok "${SERVICE_NAME} 已 active"; return 0; fi
     sleep 1
   done
-  journalctl -u "$SERVICE_NAME" -n 20 --no-pager >&2 || true
+  journalctl -u "$SERVICE_NAME" -n 20 --no-pager || true
   die "${SERVICE_NAME} 未能进入 active 状态"
 }
 
@@ -562,9 +588,14 @@ HTML
   fi
   chmod 755 "$MASQUERADE_DIR"
 
-  # 渲染配置（旧配置先备份）
+  # 二进制 + systemd 单元先就位（随后配置写完一次性重启，让新二进制和配置同时生效）
+  install_binary
+  install_unit
+
+  # 渲染配置（旧配置先备份），写完立刻重启服务
+  local bak="" cfg_changed=1
   if [[ -f "$CONFIG" ]]; then
-    local bak="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
+    bak="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
     cp -a "$CONFIG" "$bak"
     info "→ 已备份旧配置：$bak"
   fi
@@ -572,12 +603,15 @@ HTML
     "$cert" "$key" "$MASQUERADE_DIR" "$BW_UP" "$BW_DOWN" "$LISTEN"
   chmod 600 "$CONFIG"
   verify_rendered "$CONFIG" "$CODE" "$TRAFFIC_PORT" "$TRAFFIC_SECRET"
-  ok "配置已生成：$CONFIG"
+  if [[ -n "$bak" ]] && cmp -s "$bak" "$CONFIG"; then
+    cfg_changed=0
+    ok "配置内容与备份一致（sha256 $(sha256sum "$CONFIG" | cut -d' ' -f1)），无需重启"
+  else
+    ok "配置已生成：$CONFIG（sha256 $(sha256sum "$CONFIG" | cut -d' ' -f1)）"
+  fi
 
-  # 二进制 + 服务
-  install_binary
-  install_unit
-  start_service
+  # 配置写完后立刻重启，让改变生效
+  apply_service "$cfg_changed"
 
   # 验证通过才上报
   verify_service "$(listen_port "$LISTEN")" "$TRAFFIC_PORT" "$TRAFFIC_SECRET"
