@@ -5,6 +5,10 @@ Hysteria2 节点一键安装 + 自动注册。装完即跑，成功后把节点�
 ## 用法
 
 ```bash
+git clone  https://github.com/getthelostcode/register-hysteria.git
+```
+
+```bash
 # 交互式（提示单独一行，输入内容正常回显）
 ./install.sh
 
