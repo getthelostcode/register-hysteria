@@ -33,6 +33,8 @@ printf '4f13b9d93a8afb6e98283702\n' | ./install.sh
 | `--version vX.Y.Z` | 指定 hysteria 版本（默认 v2.13.0） |
 | `--force` | 版本相同也强制重下二进制 |
 | `--gen-cert` | 强制重新生成证书对 `cert`/`key`（旧的自动备份为 `*.bak.<时间戳>`） |
+| `--template-url URL` | 标准模板接口（默认 `https://hysteria.ipx.sarl/api/config-template`） |
+| `--template-file PATH` | 离线时直接用本地模板文件（跳过拉取） |
 
 环境变量：`HYSTERIA_ETC`、`HYSTERIA_BIN`、`HYSTERIA_SERVICE`、`SYSTEMD_UNIT_DIR`、
 `MASQUERADE_DIR`、`HYSTERIA_LISTEN`、`HYSTERIA_VERSION`、`REG_API`、`PUBLIC_IP`、
@@ -40,7 +42,7 @@ printf '4f13b9d93a8afb6e98283702\n' | ./install.sh
 
 ## 脚本写入的值
 
-模板：`config.yaml.example`（与本脚本同目录，装到 `/etc/hysteria/config.yaml.example`）。
+模板：**不在仓库里**，安装时从面板 `GET /api/config-template` 拉「标准版」（平台后台可编辑，版本自增）。渲染后的模板会留档到 `/etc/hysteria/config.yaml.template`，版本号写 `/etc/hysteria/config.template.version`。
 
 | 字段 | 值 |
 |------|----|
@@ -113,20 +115,25 @@ ls -l /etc/hysteria/key.pem   # 期望 -rw-------
 
 ## 配置模板来源
 
-`install.sh` 优先从平台后台拉「标准版 config.yaml」，失败才用仓库自带的 `config.yaml.example`：
+仓库里**没有** `config.yaml.example`；`install.sh` 每次都从面板拉标准模板：
 
 ```bash
-# 默认地址
+# 默认
 TEMPLATE_URL=https://hysteria.ipx.sarl/api/config-template
 
-# 换地址 / 强制用本地模板
+# 换面板地址
 ./install.sh --code XXX --template-url https://panel.example.com/api/config-template
-./install.sh --code XXX --no-template-download
+
+# 离线/调试：直接指定本地文件（版本号沿用上次安装记录的）
+./install.sh --code XXX --template-file /tmp/config.yaml
 ```
 
-- 拉下来的内容用本节点的 **识别码 / trafficStats 端口与 secret / 证书路径 / 带宽** 覆盖后写入 `/etc/hysteria/config.yaml`
-- 当前模板版本记到 `/etc/hysteria/config.template.version`，并随注册上报 `config_version`（面板节点详情可核对）
-- 平台后台改模板 → 已装节点重跑 `./install.sh --register-only` 不会重写配置；要应用新模板请重跑 `./install.sh`（会先备份旧配置并重启服务）
+- 拉取失败（面板不可达 / 接口 404）会**直接退出**，不会用旧模板硬装：
+  `[FAIL] 拉取标准模板失败：…（需面板版本包含 GET /api/config-template）`
+- 拉下来的内容用本节点 **识别码 / trafficStats 端口与 secret / 证书路径 / 带宽** 覆盖后写入 `/etc/hysteria/config.yaml`
+- 当前模板版本记到 `/etc/hysteria/config.template.version`（并随注册上报 `config_version`，面板节点详情可核对）；
+  实际使用的模板留档在 `/etc/hysteria/config.yaml.template`
+- 面板后台改模板 → 已装节点重跑 `./install.sh --register-only` 不会重写配置；要应用新模板请重跑 `./install.sh`（先备份旧配置并重启服务）
 
 ## 上报
 

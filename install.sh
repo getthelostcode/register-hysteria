@@ -9,8 +9,11 @@
 #   ./install.sh --register-only                  # 服务已装好，只重新上报注册信息
 #   ./install.sh --verify-only                    # 只做健康检查（服务/端口/API）
 #   ./install.sh --code <CODE> --gen-cert         # 强制重新生成证书对（旧的自备份）
+#   ./install.sh --code <CODE> --template-url URL # 换标准模板接口
+#   ./install.sh --code <CODE> --template-file P  # 离线：用本地模板文件（跳过拉取）
 #
 # 做的事:
+#   0. 从面板拉标准版 config.yaml（GET /api/config-template；仓库里不再放模板，拉不到直接退出）
 #   1. 用 <运营商识别码> 渲染 config.yaml（obfs salamander 密码 = 识别码）
 #      - listen: ':443'
 #      - trafficStats 监听 0.0.0.0:<随机 10000-19000>（自动避开已占用端口）
@@ -28,6 +31,7 @@
 #   HYSTERIA_SERVICE=hysteria-server  SYSTEMD_UNIT_DIR=/etc/systemd/system
 #   MASQUERADE_DIR=/var/www/hysteria  HYSTERIA_LISTEN=:443
 #   HYSTERIA_VERSION=v2.13.0          REG_API=https://hysteria.ipx.sarl/new
+#   TEMPLATE_URL=https://hysteria.ipx.sarl/api/config-template  TEMPLATE_FILE=/path/config.yaml
 #   REG_PAYLOAD='{"ip":"__IP__",...}'  # 自定义上报 JSON 模板
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -37,10 +41,13 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 HYSTERIA_VERSION="${HYSTERIA_VERSION:-v2.13.0}"
 HYSTERIA_ETC="${HYSTERIA_ETC:-/etc/hysteria}"
 CONFIG="${HYSTERIA_ETC}/config.yaml"
-TEMPLATE_SRC="${TEMPLATE_SRC:-${SCRIPT_DIR}/config.yaml.example}"
-# 标准模板来源：平台后台「系统 → Hysteria 配置模板」（可在后台编辑保存，版本自增）
+# 标准模板只从面板拉（平台后台「系统 → Hysteria 配置模板」可编辑保存，版本自增）。
+# 离线/调试可给 TEMPLATE_FILE=/path/to/config.yaml 直接指定本地文件。
 TEMPLATE_URL="${TEMPLATE_URL:-https://hysteria.ipx.sarl/api/config-template}"
-NO_TEMPLATE_DOWNLOAD="${NO_TEMPLATE_DOWNLOAD:-0}"
+TEMPLATE_FILE="${TEMPLATE_FILE:-}"
+TEMPLATE_SRC=""
+TMP_TEMPLATE=""
+trap '[[ -n "${TMP_TEMPLATE:-}" ]] && rm -f "$TMP_TEMPLATE"' EXIT
 HYSTERIA_BIN="${HYSTERIA_BIN:-/usr/local/bin/hysteria}"
 SERVICE_NAME="${HYSTERIA_SERVICE:-hysteria-server}"
 UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
@@ -108,7 +115,7 @@ while [[ $# -gt 0 ]]; do
     --force)          FORCE=1; shift ;;
     --gen-cert)       GEN_CERT=1; shift ;;
     --template-url)   TEMPLATE_URL="${2:-}"; shift 2 ;;
-    --no-template-download) NO_TEMPLATE_DOWNLOAD=1; shift ;;
+    --template-file)  TEMPLATE_FILE="${2:-}"; shift 2 ;;
     --dry-run)        DRY_RUN=1; shift ;;
     -h|--help)        usage; exit 0 ;;
     -*)               die "未知参数: $1（-h 查看用法）" ;;
@@ -551,8 +558,6 @@ main() {
     exit 0
   fi
 
-  [[ -f "$TEMPLATE_SRC" ]] || die "缺少模板 ${TEMPLATE_SRC}（应与 install.sh 在同一目录）"
-
   # --register-only：服务已装好，只从现有配置重新上报（无需再给识别码）
   if [[ $REGISTER_ONLY -eq 1 ]]; then
     [[ -s "$CONFIG" ]] || die "找不到配置 $CONFIG（先跑一次完整安装）"
@@ -615,6 +620,26 @@ main() {
 
   local cert="${HYSTERIA_ETC}/cert.pem" key="${HYSTERIA_ETC}/key.pem"
 
+  # 标准模板：只从面板拉（仓库里不再放 config.yaml.example）
+  local template_version="" fetched=""
+  if [[ -n "$TEMPLATE_FILE" ]]; then
+    [[ -s "$TEMPLATE_FILE" ]] || die "TEMPLATE_FILE 不存在或为空：${TEMPLATE_FILE}"
+    TEMPLATE_SRC="$TEMPLATE_FILE"
+    info "使用本地模板文件：${TEMPLATE_FILE}"
+    template_version="$(tr -dc '0-9' < "${HYSTERIA_ETC}/config.template.version" 2>/dev/null || true)"
+    [[ -n "$template_version" ]] || template_version="0"
+  else
+    [[ -n "$TEMPLATE_URL" ]] || die "TEMPLATE_URL 为空：标准模板只能从面板拉取（或用 --template-file 指定本地文件）"
+    TMP_TEMPLATE="$(mktemp)"
+    info "→ 拉取标准配置模板：${TEMPLATE_URL}"
+    if ! fetched="$(fetch_remote_template "$TEMPLATE_URL" "$TMP_TEMPLATE")" || [[ ! -s "$TMP_TEMPLATE" ]]; then
+      die "拉取标准模板失败：${TEMPLATE_URL}（面板不可达或接口 404，需面板版本包含 GET /api/config-template）"
+    fi
+    TEMPLATE_SRC="$TMP_TEMPLATE"
+    template_version="$fetched"
+    ok "已获取标准模板 v${template_version}（$(wc -c < "$TMP_TEMPLATE" | tr -d ' ') 字节）"
+  fi
+
   # dry-run：只渲染到 stdout
   if [[ $DRY_RUN -eq 1 ]]; then
     info "→ [dry-run] 渲染配置："
@@ -622,31 +647,16 @@ main() {
       "$cert" "$key" "$MASQUERADE_DIR" "$BW_UP" "$BW_DOWN" "$LISTEN"
     local ip="${PUBLIC_IP:-<公网IP>}"
     info "→ [dry-run] 上报 ${REG_API}："
-    build_payload "$ip" "$CODE" "$TRAFFIC_PORT" "$TRAFFIC_SECRET" "<证书SHA256>" "<证书PIN>" "<模板版本>" "$REG_PAYLOAD"
+    build_payload "$ip" "$CODE" "$TRAFFIC_PORT" "$TRAFFIC_SECRET" "<证书SHA256>" "<证书PIN>" "${template_version:-0}" "$REG_PAYLOAD"
     printf '\n'
     info "[dry-run] 未改动任何文件"
     exit 0
   fi
 
-  # 目录/模板：优先用面板后台保存的标准模板，失败回退仓库自带
+  # 目录/模板：版本 + 实际使用的那份模板留档，便于排查
   mkdir -p "$HYSTERIA_ETC"
-  local template_version="${CONFIG_VERSION:-0}" tmp_tpl="" fetched=""
-  if [[ "$NO_TEMPLATE_DOWNLOAD" -eq 0 && -n "$TEMPLATE_URL" ]]; then
-    tmp_tpl="$(mktemp)"
-    if fetched="$(fetch_remote_template "$TEMPLATE_URL" "$tmp_tpl")" && [[ -s "$tmp_tpl" ]]; then
-      template_version="$fetched"
-      TEMPLATE_SRC="$tmp_tpl"
-      ok "使用面板标准模板 v${template_version}（${TEMPLATE_URL}）"
-    else
-      warn "拉取面板模板失败（${TEMPLATE_URL}），改用仓库自带 config.yaml.example"
-      rm -f "$tmp_tpl"
-      tmp_tpl=""
-    fi
-  else
-    info "跳过下载面板模板（TEMPLATE_URL 为空或 --no-template-download）"
-  fi
-  printf '%s\n' "$template_version" > "${HYSTERIA_ETC}/config.template.version"
-  install -m 644 "$TEMPLATE_SRC" "${HYSTERIA_ETC}/config.yaml.example"
+  printf '%s\n' "${template_version:-0}" > "${HYSTERIA_ETC}/config.template.version"
+  install -m 644 "$TEMPLATE_SRC" "${HYSTERIA_ETC}/config.yaml.template"
 
   # 证书
   install_cert "$cert" "$key"
