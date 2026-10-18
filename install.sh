@@ -55,7 +55,7 @@ MASQUERADE_DIR="${MASQUERADE_DIR:-/var/www/hysteria}"
 LISTEN="${HYSTERIA_LISTEN:-:443}"
 REG_API="${REG_API:-https://hysteria.ipx.sarl/new}"
 # 节点鉴权地址：面板的 /auth（用户由 /join/{code} 注册）
-AUTH_URL="${AUTH_URL:-https://hysteria.ipx.sarl/auth}"
+AUTH_URL="${AUTH_URL:-https://auth.ipx.sarl/auth}"
 BW_UP="${BW_UP:-100 mbps}"
 BW_DOWN="${BW_DOWN:-100 mbps}"
 
