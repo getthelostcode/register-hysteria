@@ -88,7 +88,21 @@ AUTH_URL=https://hysteria.ipx.sarl/auth ./install.sh --code <运营商识别码>
 - 已存在且配对就复用（重跑不会换证书）；缺失或不配对就重新生成
 - `--gen-cert` 强制重生成，旧的备份为 `cert.pem.bak.<时间戳>`
 - 想用固定证书：把 `cert`、`key` 两个文件放到 `install.sh` 同目录，脚本会直接装过去（覆盖自动生成）
-- 客户端侧自签证书默认不信任：要么客户端 `tls.insecure: true`，要么把 `cert.pem` 作为 `ca` 下发
+- 客户端侧自签证书默认不信任：要么客户端 `tls.insecure: true`，要么把 `cert.pem` 作为 `ca` 下发，
+  **或者用指纹固定**（推荐，安装时会自动上报给面板）
+
+### 证书指纹（安装时自动计算并上报）
+
+```bash
+# hex（给人核对，面板里显示）
+openssl x509 -in /etc/hysteria/cert.pem -noout -fingerprint -sha256
+# base64(SHA256(DER))（= Hysteria 客户端 tls.pinSHA256）
+openssl x509 -in /etc/hysteria/cert.pem -outform der | openssl dgst -sha256 -binary | base64 -w0
+```
+
+安装日志里会打印这两行，并随注册 payload 上报（`cert_sha256` / `cert_pin_sha256`）。
+面板拿到 pin 后，生成的客户端配置就是 `tls.insecure: false` + `pinSHA256: <base64>`，
+既不用信任自签 CA，也不用关掉证书校验。
 
 查看生成结果：
 
@@ -102,12 +116,24 @@ ls -l /etc/hysteria/key.pem   # 期望 -rw-------
 安装 + 验证通过后 POST 到 `https://hysteria.ipx.sarl/new`，JSON：
 
 ```json
-{"ip":"<公网IP>","obfs_password":"<运营商识别码>","traffic_port":12345,"traffic_secret":"<48位hex>"}
+{
+  "ip": "<公网IP>",
+  "obfs_password": "<运营商识别码>",
+  "traffic_port": 12345,
+  "traffic_secret": "<48位hex>",
+  "cert_sha256": "AB:CD:…:EF",
+  "cert_pin_sha256": "<base64(SHA256(DER))>"
+}
 ```
+
+- `cert_sha256`：`openssl -fingerprint -sha256` 的 hex（95 字符，带冒号）
+- `cert_pin_sha256`：base64 的 SHA256(DER)，Hysteria 客户端 `tls.pinSHA256` 直接可用
+- 读不到证书时这两个字段为空字符串，上报照常成功（面板侧可选字段）
 
 - payload 同时落盘到 `/etc/hysteria/register.json`
 - 失败只 WARN，不算安装失败；3 次重试后打印手动重试命令
-- 字段名与服务端不一致时改 `REG_PAYLOAD` 即可，例如：
+- 字段名与服务端不一致时改 `REG_PAYLOAD` 即可，占位符：
+  `__IP__` `__CODE__` `__PORT__` `__SECRET__` `__CERT_SHA256__` `__CERT_PIN__`，例如：
   `REG_PAYLOAD='{"ip":"__IP__","port":__PORT__,"secret":"__SECRET__"}' ./install.sh --code X`
 
 ## 装完检查

@@ -49,7 +49,7 @@ AUTH_URL="${AUTH_URL:-https://auth.ipx.sarl/auth}"
 BW_UP="${BW_UP:-100 mbps}"
 BW_DOWN="${BW_DOWN:-100 mbps}"
 
-REG_PAYLOAD_DEFAULT='{"ip":"__IP__","obfs_password":"__CODE__","traffic_port":__PORT__,"traffic_secret":"__SECRET__"}'
+REG_PAYLOAD_DEFAULT='{"ip":"__IP__","obfs_password":"__CODE__","traffic_port":__PORT__,"traffic_secret":"__SECRET__","cert_sha256":"__CERT_SHA256__","cert_pin_sha256":"__CERT_PIN__"}'
 REG_PAYLOAD="${REG_PAYLOAD:-$REG_PAYLOAD_DEFAULT}"
 
 CODE="${CODE:-}"
@@ -214,6 +214,19 @@ cert_key_match() {
   a="$(openssl x509 -in "$cert" -noout -pubkey 2>/dev/null | openssl sha256)"
   b="$(openssl pkey -in "$key" -pubout 2>/dev/null | openssl sha256)"
   [[ -n "$a" && "$a" == "$b" ]]
+}
+
+# 证书指纹：
+#   hex  — openssl 的 SHA256 Fingerprint（AB:CD:… 给人看，面板展示/核对）
+#   pin  — base64(SHA256(DER 证书))，Hysteria 客户端 tls.pinSHA256 用这个
+# 输出 "hex|pin"；失败返回非 0。
+cert_fingerprints() {
+  local cert="$1" hex pin
+  [[ -s "$cert" ]] || return 1
+  hex="$(openssl x509 -in "$cert" -noout -fingerprint -sha256 2>/dev/null | sed 's/^[^=]*=//')"
+  pin="$(openssl x509 -in "$cert" -outform der 2>/dev/null | openssl dgst -sha256 -binary | base64 -w0 2>/dev/null || true)"
+  [[ -n "$hex" && -n "$pin" ]] || return 1
+  printf '%s|%s' "$hex" "$pin"
 }
 
 # 自动生成两个文件：cert（证书）+ key（EC P-256 私钥），10 年有效期，
@@ -419,10 +432,11 @@ verify_service() {
 
 # ------------------------------------------------------------------ 上报
 build_payload() {
-  local ip="$1" code="$2" port="$3" secret="$4" tpl="$5"
+  local ip="$1" code="$2" port="$3" secret="$4" cert_sha="$5" cert_pin="$6" tpl="$7"
   printf '%s' "$tpl" \
     | sed -e "s|__IP__|${ip}|g" -e "s|__CODE__|${code}|g" \
-          -e "s|__PORT__|${port}|g" -e "s|__SECRET__|${secret}|g"
+          -e "s|__PORT__|${port}|g" -e "s|__SECRET__|${secret}|g" \
+          -e "s|__CERT_SHA256__|${cert_sha}|g" -e "s|__CERT_PIN__|${cert_pin}|g"
 }
 
 register_node() {
@@ -440,7 +454,15 @@ register_node() {
     [[ -n "$ip" ]] || die "探测不到公网 IP（可用 PUBLIC_IP=1.2.3.4 指定）"
   fi
 
-  payload="$(build_payload "$ip" "$code" "$port" "$secret" "$REG_PAYLOAD")"
+  local cert_path="${HYSTERIA_ETC}/cert.pem" cert_sha="" cert_pin="" fp=""
+  if fp="$(cert_fingerprints "$cert_path")"; then
+    cert_sha="${fp%%|*}"
+    cert_pin="${fp##*|}"
+  else
+    warn "读不到证书指纹（${cert_path}），本次上报不含 cert_sha256 / cert_pin_sha256"
+  fi
+
+  payload="$(build_payload "$ip" "$code" "$port" "$secret" "$cert_sha" "$cert_pin" "$REG_PAYLOAD")"
   mkdir -p "$HYSTERIA_ETC"
   printf '%s\n' "$payload" > "${HYSTERIA_ETC}/register.json"
 
@@ -569,7 +591,7 @@ main() {
       "$cert" "$key" "$MASQUERADE_DIR" "$BW_UP" "$BW_DOWN" "$LISTEN"
     local ip="${PUBLIC_IP:-<公网IP>}"
     info "→ [dry-run] 上报 ${REG_API}："
-    build_payload "$ip" "$CODE" "$TRAFFIC_PORT" "$TRAFFIC_SECRET" "$REG_PAYLOAD"
+    build_payload "$ip" "$CODE" "$TRAFFIC_PORT" "$TRAFFIC_SECRET" "<证书SHA256>" "<证书PIN>" "$REG_PAYLOAD"
     printf '\n'
     info "[dry-run] 未改动任何文件"
     exit 0
@@ -581,6 +603,10 @@ main() {
 
   # 证书
   install_cert "$cert" "$key"
+  if fp="$(cert_fingerprints "$cert")"; then
+    ok "证书 SHA256: ${fp%%|*}"
+    info "  客户端 pinSHA256: ${fp##*|}"
+  fi
 
   # masquerade 目录
   mkdir -p "$MASQUERADE_DIR"
