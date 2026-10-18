@@ -138,10 +138,12 @@ TEMPLATE_URL=https://hysteria.ipx.sarl/api/config-template
   实际使用的模板留档在 `/etc/hysteria/config.yaml.template`
 - 面板后台改模板（平台标准或服务商自定义）→ 已装节点重跑 `./install.sh --register-only` 不会重写配置；
   要应用新模板请重跑 `./install.sh`（先备份旧配置并重启服务）
-- 服务商后台「配置模板」页可直接复制一键安装命令：
+- 服务商后台「配置模板」页可直接复制一键安装命令（脚本由面板下发，不依赖 GitHub 可达）：
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/getthelostcode/register-hysteria/main/install.sh | sudo bash -s -- --code <运营商识别码>
+  curl -fsSL https://hysteria.ipx.sarl/api/install.sh | sudo bash -s -- --code <运营商识别码>
   ```
+- 面板仓库里的 `resources/hysteria/install.sh` 是本文件的副本；**本文件更新后要同步过去**：
+  `cp install.sh <panel>/resources/hysteria/install.sh`（面板模板页会显示脚本 sha256/更新时间）
 
 ## 上报
 
