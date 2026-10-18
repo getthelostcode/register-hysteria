@@ -44,6 +44,8 @@ UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
 MASQUERADE_DIR="${MASQUERADE_DIR:-/var/www/hysteria}"
 LISTEN="${HYSTERIA_LISTEN:-:443}"
 REG_API="${REG_API:-https://hysteria.ipx.sarl/new}"
+# 节点鉴权地址：默认老认证服务；用面板鉴权就改成 https://hysteria.ipx.sarl/auth
+AUTH_URL="${AUTH_URL:-https://auth.ipx.sarl/auth}"
 BW_UP="${BW_UP:-100 mbps}"
 BW_DOWN="${BW_DOWN:-100 mbps}"
 
@@ -167,7 +169,7 @@ render_config() {
 
   awk -v code="$code" -v port="$port" -v secret="$secret" \
       -v cert="$cert" -v key="$key" -v masq="$masq" \
-      -v up="$up" -v down="$down" -v listen="$listen" '
+      -v up="$up" -v down="$down" -v listen="$listen" -v authurl="$AUTH_URL" '
     function q(v) { return "\047" v "\047" }
     {
       line = $0
@@ -180,6 +182,7 @@ render_config() {
       if (top == "obfs" && line ~ /^[ ]+password:/)        { print ind "password: " code; next }
       if (top == "trafficStats" && line ~ /^[ ]+listen:/)  { print ind "listen: " q("0.0.0.0:" port); next }
       if (top == "trafficStats" && line ~ /^[ ]+secret:/)  { print ind "secret: " secret; next }
+      if (top == "auth" && line ~ /^[ ]+url:/)             { print ind "url: " q(authurl); next }
       if (top == "masquerade" && line ~ /^[ ]+dir:/)       { print ind "dir: " masq; next }
       if (top == "bandwidth" && line ~ /^[ ]+up:/)         { print ind "up: " q(up); next }
       if (top == "bandwidth" && line ~ /^[ ]+down:/)       { print ind "down: " q(down); next }
@@ -194,6 +197,7 @@ verify_rendered() {
   grep -q "password: ${code}$" "$cfg" || die "渲染失败：obfs salamander password 未写入 ${cfg}"
   grep -q "secret: ${secret}$" "$cfg" || die "渲染失败：trafficStats secret 未写入 ${cfg}"
   grep -q "listen: '0.0.0.0:${port}'" "$cfg" || die "渲染失败：trafficStats listen 端口未写入 ${cfg}"
+  grep -q "url: '${AUTH_URL}'" "$cfg" || die "渲染失败：auth.http.url 未写入 ${cfg}（期望 ${AUTH_URL}）"
   if grep -q '2664184394b93fae40dc25e5eb62f5043c01ca08ad5c95aa' "$cfg"; then
     die "渲染失败：模板里的示例 secret 仍在 ${cfg}"
   fi

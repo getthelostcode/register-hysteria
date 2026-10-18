@@ -36,7 +36,7 @@ printf '4f13b9d93a8afb6e98283702\n' | ./install.sh
 
 环境变量：`HYSTERIA_ETC`、`HYSTERIA_BIN`、`HYSTERIA_SERVICE`、`SYSTEMD_UNIT_DIR`、
 `MASQUERADE_DIR`、`HYSTERIA_LISTEN`、`HYSTERIA_VERSION`、`REG_API`、`PUBLIC_IP`、
-`REG_PAYLOAD`。
+`REG_PAYLOAD`、`AUTH_URL`。
 
 ## 脚本写入的值
 
@@ -47,12 +47,22 @@ printf '4f13b9d93a8afb6e98283702\n' | ./install.sh
 | `listen` | `':443'` |
 | `tls.cert` / `tls.key` | `/etc/hysteria/cert.pem` / `key.pem`，由脚本自动生成（见下） |
 | `obfs.salamander.password` | **运营商识别码**（客户端需一致） |
+| `auth.http.url` | `AUTH_URL`，默认 `https://auth.ipx.sarl/auth`；改用面板鉴权就传 `https://hysteria.ipx.sarl/auth`（用户由面板 `/join/{code}` 注册） |
 | `trafficStats.listen` | `0.0.0.0:<随机 10000-19000>`（自动避开已占用端口；重跑时复用旧值，旧值不在区间则重新随机） |
 | `trafficStats.secret` | `openssl rand -hex 24`（重跑时复用旧值） |
 | `masquerade.file.dir` | `/var/www/hysteria`（自动建目录 + index.html） |
 | `bandwidth.up/down` | `100 mbps` |
 
-其余字段（auth、quic 等）原样保留。
+其余字段（quic 等）原样保留。
+
+面板鉴权示例：
+
+```bash
+AUTH_URL=https://hysteria.ipx.sarl/auth ./install.sh --code <运营商识别码>
+```
+
+用户登录名是注册时填的**邮箱**，密码就是他自己设的；面板 `/auth` 成功后返回该用户的 uuid，
+流量统计与踢人都以这个 uuid 为准。
 
 ### 重跑（幂等）与重启时机
 
