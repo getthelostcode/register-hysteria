@@ -140,8 +140,7 @@ TEMPLATE_URL=https://hysteria.ipx.sarl/api/config-template
   要应用新模板请重跑 `./install.sh`（先备份旧配置并重启服务）
 - 服务商后台「配置模板」页可直接复制一键安装命令：
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/getthelostcode/register-hysteria/main/install.sh -o install.sh \
-    && sudo bash install.sh --code <运营商识别码>
+  curl -fsSL https://raw.githubusercontent.com/getthelostcode/register-hysteria/main/install.sh | sudo bash -s -- --code <运营商识别码>
   ```
 
 ## 上报
