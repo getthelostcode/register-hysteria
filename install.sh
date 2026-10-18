@@ -38,6 +38,9 @@ HYSTERIA_VERSION="${HYSTERIA_VERSION:-v2.13.0}"
 HYSTERIA_ETC="${HYSTERIA_ETC:-/etc/hysteria}"
 CONFIG="${HYSTERIA_ETC}/config.yaml"
 TEMPLATE_SRC="${TEMPLATE_SRC:-${SCRIPT_DIR}/config.yaml.example}"
+# 标准模板来源：平台后台「系统 → Hysteria 配置模板」（可在后台编辑保存，版本自增）
+TEMPLATE_URL="${TEMPLATE_URL:-https://hysteria.ipx.sarl/api/config-template}"
+NO_TEMPLATE_DOWNLOAD="${NO_TEMPLATE_DOWNLOAD:-0}"
 HYSTERIA_BIN="${HYSTERIA_BIN:-/usr/local/bin/hysteria}"
 SERVICE_NAME="${HYSTERIA_SERVICE:-hysteria-server}"
 UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
@@ -49,7 +52,7 @@ AUTH_URL="${AUTH_URL:-https://auth.ipx.sarl/auth}"
 BW_UP="${BW_UP:-100 mbps}"
 BW_DOWN="${BW_DOWN:-100 mbps}"
 
-REG_PAYLOAD_DEFAULT='{"ip":"__IP__","obfs_password":"__CODE__","traffic_port":__PORT__,"traffic_secret":"__SECRET__","cert_sha256":"__CERT_SHA256__","cert_pin_sha256":"__CERT_PIN__"}'
+REG_PAYLOAD_DEFAULT='{"ip":"__IP__","obfs_password":"__CODE__","traffic_port":__PORT__,"traffic_secret":"__SECRET__","cert_sha256":"__CERT_SHA256__","cert_pin_sha256":"__CERT_PIN__","config_version":__CONFIG_VERSION__}'
 REG_PAYLOAD="${REG_PAYLOAD:-$REG_PAYLOAD_DEFAULT}"
 
 CODE="${CODE:-}"
@@ -104,6 +107,8 @@ while [[ $# -gt 0 ]]; do
     --no-download)    NO_DOWNLOAD=1; shift ;;
     --force)          FORCE=1; shift ;;
     --gen-cert)       GEN_CERT=1; shift ;;
+    --template-url)   TEMPLATE_URL="${2:-}"; shift 2 ;;
+    --no-template-download) NO_TEMPLATE_DOWNLOAD=1; shift ;;
     --dry-run)        DRY_RUN=1; shift ;;
     -h|--help)        usage; exit 0 ;;
     -*)               die "未知参数: $1（-h 查看用法）" ;;
@@ -227,6 +232,25 @@ cert_fingerprints() {
   pin="$(openssl x509 -in "$cert" -outform der 2>/dev/null | openssl dgst -sha256 -binary | base64 -w0 2>/dev/null || true)"
   [[ -n "$hex" && -n "$pin" ]] || return 1
   printf '%s|%s' "$hex" "$pin"
+}
+
+# 从面板拉标准模板：GET {TEMPLATE_URL} → 写出 content 到 $2，stdout 打印 version。
+fetch_remote_template() {
+  local url="$1" out="$2" json=""
+  [[ -n "$url" ]] || return 1
+  command -v curl >/dev/null 2>&1 || return 1
+  json="$( { run_t 10 curl -sS -f "$url" 2>/dev/null || true; } )"
+  [[ -n "$json" ]] || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  printf '%s' "$json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+content = data.get("content") or ""
+if not content:
+    sys.exit(1)
+open(sys.argv[1], "w").write(content if content.endswith("\n") else content + "\n")
+print(data.get("version") or 0)
+' "$out"
 }
 
 # 自动生成两个文件：cert（证书）+ key（EC P-256 私钥），10 年有效期，
@@ -432,11 +456,12 @@ verify_service() {
 
 # ------------------------------------------------------------------ 上报
 build_payload() {
-  local ip="$1" code="$2" port="$3" secret="$4" cert_sha="$5" cert_pin="$6" tpl="$7"
+  local ip="$1" code="$2" port="$3" secret="$4" cert_sha="$5" cert_pin="$6" cfgver="$7" tpl="$8"
   printf '%s' "$tpl" \
     | sed -e "s|__IP__|${ip}|g" -e "s|__CODE__|${code}|g" \
           -e "s|__PORT__|${port}|g" -e "s|__SECRET__|${secret}|g" \
-          -e "s|__CERT_SHA256__|${cert_sha}|g" -e "s|__CERT_PIN__|${cert_pin}|g"
+          -e "s|__CERT_SHA256__|${cert_sha}|g" -e "s|__CERT_PIN__|${cert_pin}|g" \
+          -e "s|__CONFIG_VERSION__|${cfgver}|g"
 }
 
 register_node() {
@@ -462,7 +487,13 @@ register_node() {
     warn "读不到证书指纹（${cert_path}），本次上报不含 cert_sha256 / cert_pin_sha256"
   fi
 
-  payload="$(build_payload "$ip" "$code" "$port" "$secret" "$cert_sha" "$cert_pin" "$REG_PAYLOAD")"
+  local cfg_version="0"
+  if [[ -f "${HYSTERIA_ETC}/config.template.version" ]]; then
+    cfg_version="$(tr -dc '0-9' < "${HYSTERIA_ETC}/config.template.version" 2>/dev/null || true)"
+    [[ -n "$cfg_version" ]] || cfg_version="0"
+  fi
+
+  payload="$(build_payload "$ip" "$code" "$port" "$secret" "$cert_sha" "$cert_pin" "$cfg_version" "$REG_PAYLOAD")"
   mkdir -p "$HYSTERIA_ETC"
   printf '%s\n' "$payload" > "${HYSTERIA_ETC}/register.json"
 
@@ -591,14 +622,30 @@ main() {
       "$cert" "$key" "$MASQUERADE_DIR" "$BW_UP" "$BW_DOWN" "$LISTEN"
     local ip="${PUBLIC_IP:-<公网IP>}"
     info "→ [dry-run] 上报 ${REG_API}："
-    build_payload "$ip" "$CODE" "$TRAFFIC_PORT" "$TRAFFIC_SECRET" "<证书SHA256>" "<证书PIN>" "$REG_PAYLOAD"
+    build_payload "$ip" "$CODE" "$TRAFFIC_PORT" "$TRAFFIC_SECRET" "<证书SHA256>" "<证书PIN>" "<模板版本>" "$REG_PAYLOAD"
     printf '\n'
     info "[dry-run] 未改动任何文件"
     exit 0
   fi
 
-  # 目录/模板
+  # 目录/模板：优先用面板后台保存的标准模板，失败回退仓库自带
   mkdir -p "$HYSTERIA_ETC"
+  local template_version="${CONFIG_VERSION:-0}" tmp_tpl="" fetched=""
+  if [[ "$NO_TEMPLATE_DOWNLOAD" -eq 0 && -n "$TEMPLATE_URL" ]]; then
+    tmp_tpl="$(mktemp)"
+    if fetched="$(fetch_remote_template "$TEMPLATE_URL" "$tmp_tpl")" && [[ -s "$tmp_tpl" ]]; then
+      template_version="$fetched"
+      TEMPLATE_SRC="$tmp_tpl"
+      ok "使用面板标准模板 v${template_version}（${TEMPLATE_URL}）"
+    else
+      warn "拉取面板模板失败（${TEMPLATE_URL}），改用仓库自带 config.yaml.example"
+      rm -f "$tmp_tpl"
+      tmp_tpl=""
+    fi
+  else
+    info "跳过下载面板模板（TEMPLATE_URL 为空或 --no-template-download）"
+  fi
+  printf '%s\n' "$template_version" > "${HYSTERIA_ETC}/config.template.version"
   install -m 644 "$TEMPLATE_SRC" "${HYSTERIA_ETC}/config.yaml.example"
 
   # 证书

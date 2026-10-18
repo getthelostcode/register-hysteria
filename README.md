@@ -111,6 +111,23 @@ openssl x509 -in /etc/hysteria/cert.pem -noout -subject -dates -ext subjectAltNa
 ls -l /etc/hysteria/key.pem   # 期望 -rw-------
 ```
 
+## 配置模板来源
+
+`install.sh` 优先从平台后台拉「标准版 config.yaml」，失败才用仓库自带的 `config.yaml.example`：
+
+```bash
+# 默认地址
+TEMPLATE_URL=https://hysteria.ipx.sarl/api/config-template
+
+# 换地址 / 强制用本地模板
+./install.sh --code XXX --template-url https://panel.example.com/api/config-template
+./install.sh --code XXX --no-template-download
+```
+
+- 拉下来的内容用本节点的 **识别码 / trafficStats 端口与 secret / 证书路径 / 带宽** 覆盖后写入 `/etc/hysteria/config.yaml`
+- 当前模板版本记到 `/etc/hysteria/config.template.version`，并随注册上报 `config_version`（面板节点详情可核对）
+- 平台后台改模板 → 已装节点重跑 `./install.sh --register-only` 不会重写配置；要应用新模板请重跑 `./install.sh`（会先备份旧配置并重启服务）
+
 ## 上报
 
 安装 + 验证通过后 POST 到 `https://hysteria.ipx.sarl/new`，JSON：
