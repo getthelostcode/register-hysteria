@@ -128,12 +128,21 @@ TEMPLATE_URL=https://hysteria.ipx.sarl/api/config-template
 ./install.sh --code XXX --template-file /tmp/config.yaml
 ```
 
+- 请求会带上本节点识别码：`GET {TEMPLATE_URL}?code=<运营商识别码>`，面板据此返回
+  **该服务商在服务商后台自定义的模板**（没有则平台标准版），安装日志会打印
+  `已获取服务商自定义模板 v4` / `已获取平台标准模板 v1`
 - 拉取失败（面板不可达 / 接口 404）会**直接退出**，不会用旧模板硬装：
   `[FAIL] 拉取标准模板失败：…（需面板版本包含 GET /api/config-template）`
 - 拉下来的内容用本节点 **识别码 / trafficStats 端口与 secret / 证书路径 / 带宽** 覆盖后写入 `/etc/hysteria/config.yaml`
 - 当前模板版本记到 `/etc/hysteria/config.template.version`（并随注册上报 `config_version`，面板节点详情可核对）；
   实际使用的模板留档在 `/etc/hysteria/config.yaml.template`
-- 面板后台改模板 → 已装节点重跑 `./install.sh --register-only` 不会重写配置；要应用新模板请重跑 `./install.sh`（先备份旧配置并重启服务）
+- 面板后台改模板（平台标准或服务商自定义）→ 已装节点重跑 `./install.sh --register-only` 不会重写配置；
+  要应用新模板请重跑 `./install.sh`（先备份旧配置并重启服务）
+- 服务商后台「配置模板」页可直接复制一键安装命令：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/getthelostcode/register-hysteria/main/install.sh -o install.sh \
+    && sudo bash install.sh --code <运营商识别码>
+  ```
 
 ## 上报
 

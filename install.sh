@@ -256,7 +256,7 @@ content = data.get("content") or ""
 if not content:
     sys.exit(1)
 open(sys.argv[1], "w").write(content if content.endswith("\n") else content + "\n")
-print(data.get("version") or 0)
+print("%s\t%s" % (data.get("version") or 0, data.get("source") or "standard"))
 ' "$out"
 }
 
@@ -621,7 +621,7 @@ main() {
   local cert="${HYSTERIA_ETC}/cert.pem" key="${HYSTERIA_ETC}/key.pem"
 
   # 标准模板：只从面板拉（仓库里不再放 config.yaml.example）
-  local template_version="" fetched=""
+  local template_version="" template_source="standard" fetched=""
   if [[ -n "$TEMPLATE_FILE" ]]; then
     [[ -s "$TEMPLATE_FILE" ]] || die "TEMPLATE_FILE 不存在或为空：${TEMPLATE_FILE}"
     TEMPLATE_SRC="$TEMPLATE_FILE"
@@ -631,13 +631,21 @@ main() {
   else
     [[ -n "$TEMPLATE_URL" ]] || die "TEMPLATE_URL 为空：标准模板只能从面板拉取（或用 --template-file 指定本地文件）"
     TMP_TEMPLATE="$(mktemp)"
-    info "→ 拉取标准配置模板：${TEMPLATE_URL}"
-    if ! fetched="$(fetch_remote_template "$TEMPLATE_URL" "$TMP_TEMPLATE")" || [[ ! -s "$TMP_TEMPLATE" ]]; then
-      die "拉取标准模板失败：${TEMPLATE_URL}（面板不可达或接口 404，需面板版本包含 GET /api/config-template）"
+    local tpl_url="$TEMPLATE_URL"
+    if [[ "$tpl_url" != *"?"* ]]; then
+      tpl_url="${tpl_url}?code=${CODE}"
+    fi
+    info "→ 拉取配置模板：${tpl_url}"
+    if ! fetched="$(fetch_remote_template "$tpl_url" "$TMP_TEMPLATE")" || [[ ! -s "$TMP_TEMPLATE" ]]; then
+      die "拉取配置模板失败：${tpl_url}（面板不可达或接口 404，需面板版本包含 GET /api/config-template）"
     fi
     TEMPLATE_SRC="$TMP_TEMPLATE"
-    template_version="$fetched"
-    ok "已获取标准模板 v${template_version}（$(wc -c < "$TMP_TEMPLATE" | tr -d ' ') 字节）"
+    template_version="${fetched%%$'\t'*}"
+    template_source="${fetched##*$'\t'}"
+    [[ "$template_source" == "$fetched" ]] && template_source="standard"
+    local source_label="平台标准"
+    [[ "$template_source" == "provider" ]] && source_label="服务商自定义"
+    ok "已获取${source_label}模板 v${template_version}（$(wc -c < "$TMP_TEMPLATE" | tr -d ' ') 字节）"
   fi
 
   # dry-run：只渲染到 stdout
