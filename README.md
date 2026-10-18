@@ -49,7 +49,7 @@ printf '4f13b9d93a8afb6e98283702\n' | ./install.sh
 | `listen` | `':443'` |
 | `tls.cert` / `tls.key` | `/etc/hysteria/cert.pem` / `key.pem`，由脚本自动生成（见下） |
 | `obfs.salamander.password` | **运营商识别码**（客户端需一致） |
-| `auth.http.url` | `AUTH_URL`，默认 `https://auth.ipx.sarl/auth`；改用面板鉴权就传 `https://hysteria.ipx.sarl/auth`（用户由面板 `/join/{code}` 注册） |
+| `auth.http.url` | `AUTH_URL`，默认 `https://hysteria.ipx.sarl/auth`（面板鉴权，用户由面板 `/join/{code}` 注册；要换地址用 `AUTH_URL=` 覆盖） |
 | `trafficStats.listen` | `0.0.0.0:<随机 10000-19000>`（自动避开已占用端口；重跑时复用旧值，旧值不在区间则重新随机） |
 | `trafficStats.secret` | `openssl rand -hex 24`（重跑时复用旧值） |
 | `masquerade.file.dir` | `/var/www/hysteria`（自动建目录 + index.html） |
@@ -57,10 +57,10 @@ printf '4f13b9d93a8afb6e98283702\n' | ./install.sh
 
 其余字段（quic 等）原样保留。
 
-面板鉴权示例：
+默认就是面板鉴权（`https://hysteria.ipx.sarl/auth`），需要换地址时才传：
 
 ```bash
-AUTH_URL=https://hysteria.ipx.sarl/auth ./install.sh --code <运营商识别码>
+AUTH_URL=https://auth.example.com/auth ./install.sh --code <运营商识别码>
 ```
 
 用户登录名是注册时填的**邮箱**，密码就是他自己设的；面板 `/auth` 成功后返回该用户的 uuid，
